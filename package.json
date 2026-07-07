@@ -1,0 +1,26 @@
+{
+  "name": "local-ai-proxy",
+  "version": "1.0.3-beta3",
+  "private": true,
+  "type": "module",
+  "description": "Cumulocity microservice that reverse-tunnels a cloud AI agent to a local LM Studio (OpenAI-compatible) server on your Mac",
+  "author": {
+    "name": "hendrik.naether@cumulocity.com"
+  },
+  "scripts": {
+    "build": "DOCKER_DEFAULT_PLATFORM=linux/amd64 nitro build",
+    "dev": "nitro dev",
+    "preview": "npx srvx --prod .output/",
+    "typecheck": "tsc --noEmit",
+    "typegen": "nitro prepare",
+    "bootstrap": "c8y-nitro bootstrap",
+    "roles": "c8y-nitro roles"
+  },
+  "dependencies": {
+    "c8y-nitro": "^0.6.0",
+    "nitro": "3.0.260429-beta"
+  },
+  "devDependencies": {
+    "rolldown": "1.0.2"
+  }
+}

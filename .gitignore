@@ -1,0 +1,11 @@
+node_modules
+dist
+.data
+.nitro
+.cache
+.output
+.env
+.env.local
+build
+.c8y
+*.zip

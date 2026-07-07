@@ -1,0 +1,19 @@
+{
+  "extends": "./node_modules/.nitro/types/tsconfig.json",
+  "compilerOptions": {
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "strict": true,
+    "useUnknownInCatchVariables": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "noEmit": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "target": "ESNext",
+    "skipLibCheck": true
+  },
+  "exclude": ["mac-client"]
+}
