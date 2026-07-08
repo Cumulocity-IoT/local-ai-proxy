@@ -372,9 +372,17 @@ model (watch LM Studio’s log to confirm).
 - **15-minute request ceiling.** Cumulocity may terminate long requests. The Mac
   client sends heartbeats, proactively recycles its socket at ~10 min, and
   auto-reconnects with backoff — so idle periods and the ceiling are transparent.
-- **Non-streaming (v1).** `stream:true` is coerced to `false`; the agent receives one
-  JSON response. Token streaming (SSE over the tunnel) is a planned follow-up and
-  first needs an empirical check that the C8Y gateway doesn’t buffer streamed bodies.
+- **Streaming and buffered, chosen per request.** Requests with `stream:true` are
+  relayed token-by-token: the Mac forwards LM Studio’s SSE as `response-start` /
+  `response-chunk` / `response-end` frames, and the proxy re-emits them as a chunked
+  HTTP response. Requests without streaming are buffered into one JSON body.
+  - The streamed response is labeled **`text/plain`** (not `text/event-stream`): the
+    logging layer bundled by c8y-nitro (evlog) crashes on a streamed `text/event-stream`
+    response under h3 v2, and `text/plain` avoids that while still streaming the SSE
+    body verbatim. AI SDK clients parse the body as SSE regardless of this label.
+  - One caveat to verify on a real tenant: the C8Y gateway *may* buffer the SSE body
+    before forwarding — if so, streaming is still functionally correct (the agent
+    receives the full stream), just not incremental.
 - **Which endpoint does the agent call?** The Vercel AI SDK’s default `openai(model)`
   may target the **Responses API** (`POST /v1/responses`) rather than
   `/v1/chat/completions`. The proxy forwards whatever path arrives, so make sure your

@@ -5,7 +5,13 @@
  *
  * Direction:
  *   service → Mac:  RequestFrame, PingFrame
- *   Mac → service:  ResponseFrame, ErrorFrame, PongFrame
+ *   Mac → service:  ResponseFrame | (ResponseStart→ResponseChunk*→ResponseEnd),
+ *                   ErrorFrame, PongFrame
+ *
+ * Each request is answered by EITHER a single buffered ResponseFrame (when the
+ * caller did not request streaming) OR a stream: one ResponseStartFrame, zero or
+ * more ResponseChunkFrames, and a terminal ResponseEndFrame — all sharing the
+ * request `id`. An ErrorFrame can replace/terminate either shape at any point.
  *
  * This file is shared by both the microservice and mac-client (types only).
  */
@@ -20,9 +26,15 @@ export interface RequestFrame {
   headers: Record<string, string>
   /** Raw request body (JSON string) or undefined for GET/HEAD. */
   body?: string
+  /**
+   * When true, the Mac relays the response chunk-by-chunk (ResponseStart/Chunk/End)
+   * instead of buffering it into a single ResponseFrame. Set by the route when the
+   * OpenAI request body carries `stream:true`.
+   */
+  stream?: boolean
 }
 
-/** LM Studio's response, relayed back to the agent verbatim. */
+/** LM Studio's response (buffered), relayed back to the agent verbatim. */
 export interface ResponseFrame {
   type: 'response'
   id: string
@@ -30,6 +42,27 @@ export interface ResponseFrame {
   headers: Record<string, string>
   /** Raw response body (string). */
   body: string
+}
+
+/** First frame of a streamed response: status + headers, no body yet. */
+export interface ResponseStartFrame {
+  type: 'response-start'
+  id: string
+  status: number
+  headers: Record<string, string>
+}
+
+/** One slice of a streamed response body (UTF-8 text; SSE payloads are text). */
+export interface ResponseChunkFrame {
+  type: 'response-chunk'
+  id: string
+  data: string
+}
+
+/** Terminal frame of a streamed response — the body is complete. */
+export interface ResponseEndFrame {
+  type: 'response-end'
+  id: string
 }
 
 /** The Mac failed to reach LM Studio (or another local error). */
@@ -45,7 +78,14 @@ export interface PongFrame { type: 'pong' }
 /** Frames the microservice sends to the Mac. */
 export type ServerFrame = RequestFrame | PingFrame | PongFrame
 /** Frames the Mac sends to the microservice. */
-export type ClientFrame = ResponseFrame | ErrorFrame | PingFrame | PongFrame
+export type ClientFrame =
+  | ResponseFrame
+  | ResponseStartFrame
+  | ResponseChunkFrame
+  | ResponseEndFrame
+  | ErrorFrame
+  | PingFrame
+  | PongFrame
 
 export type Frame = ServerFrame | ClientFrame
 

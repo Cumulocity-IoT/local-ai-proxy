@@ -7,11 +7,13 @@
  * there is no per-endpoint logic here.
  *
  * The route is gateway-protected (C8Y auth via the dedicated technical user); there
- * is no anonymous access. v1 is non-streaming: `stream:true` is coerced to false.
+ * is no anonymous access. `stream:true` requests are relayed as a real chunked
+ * `text/event-stream` response (SSE multiplexed over the tunnel); everything else is
+ * buffered into a single JSON body.
  */
 import { defineEventHandler, setResponseHeader, setResponseStatus } from 'nitro/h3'
 import { useLogger } from 'c8y-nitro/utils'
-import { hasPeer, sendRequest } from '../../lib/bridge'
+import { hasPeer, sendRequest, sendRequestStreaming } from '../../lib/bridge'
 
 function clip(value: string, max = 1500): string {
   return value.length <= max ? value : `${value.slice(0, max)}...`
@@ -73,6 +75,42 @@ export default defineEventHandler(async (event) => {
     requestBodyBytes: body ? Buffer.byteLength(body, 'utf8') : 0,
     streamRequested,
   })
+
+  // Streaming path: relay the SSE body chunk-by-chunk. The body is forwarded verbatim
+  // (stream:true intact); the Mac replies with response-start/chunk/end frames.
+  if (streamRequested === true) {
+    try {
+      const { status, headers, stream } = await sendRequestStreaming({
+        method,
+        path: forwardPath,
+        headers: { 'content-type': 'application/json' },
+        body,
+      })
+      setResponseStatus(event, status)
+      const upstreamContentType = headers['content-type'] ?? 'text/event-stream'
+      // NOTE: we deliberately do NOT echo `text/event-stream` back. evlog's Nitro-v3
+      // plugin (bundled by c8y-nitro, dev AND prod) detects streaming responses by
+      // content-type / transfer-encoding and tries to reassign `event.res` to wrap
+      // them for logging — but h3 v2 makes `event.res` getter-only, so that throws a
+      // 500. Sending `text/plain` keeps the response a real chunked stream while
+      // dodging that detection. The body bytes are the SSE payload, verbatim.
+      const outgoingContentType = 'text/plain; charset=utf-8'
+      setResponseHeader(event, 'content-type', outgoingContentType)
+      // SSE hygiene: never let an intermediary buffer or transform the stream.
+      setResponseHeader(event, 'cache-control', 'no-cache, no-transform')
+      log.set({ upstreamStatus: status, upstreamContentType, outgoingContentType, streaming: true })
+      return stream
+    }
+    catch (err) {
+      log.set({
+        result: 'tunnel_error',
+        streaming: true,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      setResponseStatus(event, 502)
+      return { error: { message: err instanceof Error ? err.message : String(err), type: 'tunnel_error' } }
+    }
+  }
 
   try {
     const resp = await sendRequest({

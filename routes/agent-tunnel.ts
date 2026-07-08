@@ -11,7 +11,7 @@
  */
 import { defineWebSocketHandler } from 'nitro/h3'
 import { createLogger } from 'c8y-nitro/utils'
-import { clearPeer, registerPeer, rejectResponse, resolveResponse, type TunnelPeer } from '../lib/bridge'
+import { clearPeer, endStream, pushChunk, registerPeer, rejectResponse, resolveResponse, startStream, type TunnelPeer } from '../lib/bridge'
 import { useTunnelSecret } from '../lib/config'
 import { logLocalProviderConfigOnce } from '../lib/provider-config'
 import { TUNNEL_SECRET_HEADER, type ClientFrame } from '../shared/protocol'
@@ -65,6 +65,15 @@ export default defineWebSocketHandler({
     switch (frame.type) {
       case 'response':
         resolveResponse(frame)
+        break
+      case 'response-start':
+        startStream(frame.id, frame.status, frame.headers)
+        break
+      case 'response-chunk':
+        pushChunk(frame.id, frame.data)
+        break
+      case 'response-end':
+        endStream(frame.id)
         break
       case 'error':
         rejectResponse(frame.id, frame.message)

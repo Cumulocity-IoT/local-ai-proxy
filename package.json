@@ -1,6 +1,6 @@
 {
   "name": "local-ai-proxy",
-  "version": "1.0.3-beta3",
+  "version": "1.0.3-beta4",
   "private": true,
   "type": "module",
   "description": "Cumulocity microservice that reverse-tunnels a cloud AI agent to a local LM Studio (OpenAI-compatible) server on your Mac",

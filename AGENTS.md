@@ -38,10 +38,23 @@ safely" companion.
    state, so the agent's HTTP request and the Mac's WS **must** hit the same process.
    The manifest enforces this (`scale: NONE`, `isolation: PER_TENANT`). Never add
    auto-scale or move bridge state assuming shared memory across replicas.
-2. **Non-streaming (v1).** `stream:true` is coerced to `false` in the catch-all
-   route; responses come back as one JSON body. Streaming (SSE multiplexing over the
-   tunnel) is a documented follow-up and needs an empirical gateway-buffering check
-   first.
+2. **Two response shapes, chosen per request.** The catch-all route reads the OpenAI
+   body's `stream` flag (body forwarded verbatim, no coercion): falsy → buffered path
+   (single `ResponseFrame`, JSON body); `stream:true` → streaming path (the Mac relays
+   `response-start`/`response-chunk`/`response-end` frames; the bridge feeds them into
+   a `ReadableStream` returned as a chunked HTTP response).
+   - **The streamed response MUST be labeled `text/plain`, not `text/event-stream`.**
+     evlog's Nitro-v3 plugin (`evlog/nitro/v3/plugin.mjs`, bundled by c8y-nitro in
+     **dev and prod**) detects streaming responses by content-type / `transfer-encoding`
+     and tries to reassign `event.res` to wrap them for logging — but h3 v2 makes
+     `event.res` getter-only, so `text/event-stream` throws a 500
+     (`Cannot set property res ...`). `text/plain` dodges that detection while the body
+     still streams chunk-by-chunk (verified locally). Do not "restore" the SSE
+     content-type without first fixing/patching evlog.
+   - Remaining caveat: the C8Y gateway *may* buffer SSE (still functionally correct if
+     so — verify on a real tenant), and the AI SDK client must accept an SSE stream
+     over `text/plain` (it parses the body as SSE regardless of content-type in the
+     versions checked — confirm in the end-to-end agent test).
 3. **WebSocket auth is manual.** `c8y-nitro`'s role-guard middleware only covers HTTP
    handlers, so the WS route checks the tunnel secret itself in the `open` hook
    (header `x-tunnel-secret` or `?secret=` query). Don't assume the guard runs there.
@@ -105,9 +118,12 @@ cd mac-client && node --import tsx --env-file=.env src/index.ts
 - **`noExternals: ['tslib']`** is required: Nitro's tracer copies the wrong tslib
   export condition, causing `ERR_MODULE_NOT_FOUND …tslib/modules/index.js` at
   startup. If another dep hits the same error, add it to that list.
-- **SSE content types are downgraded.** The catch-all rewrites `text/event-stream`
-  responses to `text/plain` so c8y-nitro's response logging doesn't crash; the body
-  is still forwarded verbatim. Revisit when adding real streaming.
+- **SSE flows through the streaming path, labeled `text/plain`.** The streaming branch
+  returns a `ReadableStream` with content-type `text/plain; charset=utf-8` (see
+  constraint #2 for why — the evlog/h3-v2 `event.res` crash). The body bytes are the
+  SSE payload verbatim (`data: {...}` … `data: [DONE]`). The buffered branch keeps its
+  own defensive `text/event-stream`→`text/plain` downgrade for a non-streamed response
+  that unexpectedly arrives as event-stream.
 - **`package.json` `author.name` is required** by c8y-nitro or the build fails.
 - Don't import `@c8y/client` directly — use `c8y-nitro/utils` (`useTenantOption`,
   `useLogger`, `createLogger`). `@c8y/client` is only a transitive dependency.
