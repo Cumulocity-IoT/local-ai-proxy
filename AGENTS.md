@@ -27,6 +27,8 @@ safely" companion.
   over the tunnel, verbatim.
 - `routes/health.get.ts`, `routes/provider-config.get.ts` — diagnostics.
 - `lib/bridge.ts` — in-memory request↔response bridge (`currentPeer` + `pending` map).
+- `lib/item-store.ts` — in-memory cache of Responses-API output items by id, so the
+  relay can expand stateful `item_reference` inputs for a stateless LM Studio (Option B).
 - `lib/config.ts` — reads the tunnel secret (tenant option, env fallback in dev).
 - `lib/provider-config.ts` — builds/logs the paste-ready Local provider JSON.
 - `shared/protocol.ts` — WS frame types, shared by microservice **and** `mac-client`.
@@ -65,6 +67,23 @@ safely" companion.
 5. **15-minute request ceiling.** The mac-client proactively recycles its socket at
    ~10 min (`RECYCLE_MS`) and reconnects with backoff. Keep any long-lived-socket
    changes under that ceiling.
+6. **Stateful Responses API over a stateless backend (Option B).** The cloud agent
+   drives `/v1/responses` via `@ai-sdk/openai`, which (with OpenAI's `store` option
+   defaulting on) sends prior output items as `{ type:"item_reference", id }` instead of
+   resending them; LM Studio (stateless) rejects unresolved refs with `400 invalid_union`.
+   The relay compensates in two ways, uniformly across store-default and `store:false`:
+   the streaming tee parses every completed output item into `lib/item-store.ts`, and the
+   next request's `input[]` is rewritten before forwarding — each `item_reference` is
+   resolved from the store, and every replayed item (whether resolved or arriving inline)
+   is **normalized to a canonical input shape** that LM Studio accepts: `reasoning` items
+   dropped, assistant `message` flattened to `{role,content:"…"}`, `function_call` reduced
+   to `{type,call_id,name,arguments}`, and `function_call_output.output` coerced from the
+   agent's array form to a string. Logged as `expandedRefs`/`unresolvedRefs`/`droppedRefs`.
+   Depends on **single replica** (the process that streamed the response handles the
+   follow-up). Applies only to `/v1/responses`.
+   - Upstream alternative: setting `providerOptions.openai.store = false` on the agent
+     makes the SDK resend full items (no `item_reference`); the normalization above still
+     runs on those inline items, so the proxy works either way.
 
 ## API conventions (h3 v2 / Nitro 3)
 
