@@ -120,6 +120,11 @@ You should see `tunnel connected → ws://localhost:3000/agent-tunnel`.
 > Tip: run it via `node --import tsx …` (as above) rather than `pnpm start` — pnpm’s
 > pre-run dependency check can abort before the script runs.
 
+> Alternative: build a self-contained bundle once with `pnpm build`, then run it with
+> `node --env-file=.env dist/index.mjs` (or `pnpm start:dist`). The bundle has no
+> runtime dependencies — handy for copying just `dist/index.mjs` + `.env` to another
+> machine without `pnpm install`.
+
 **3. Verify the path**
 
 ```sh
@@ -293,6 +298,7 @@ C8Y_AUTH=Basic <base64 of user:password>
 ```sh
 cd mac-client
 node --import tsx --env-file=.env src/index.ts
+# or, using the self-contained bundle (see Part A):  pnpm build && pnpm start:dist
 ```
 
 `/health` should now report `"tunnel":"connected"`.
