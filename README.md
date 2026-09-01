@@ -21,13 +21,6 @@ Agent (cloud) ──HTTP /v1/* (gateway auth: technical-user Basic)──▶ loc
                           ▼
                           LM Studio  http://127.0.0.1:1234/v1
 ```
-
-**Why a reverse WebSocket tunnel and not a VPN?** Cumulocity microservices run with
-`NET_ADMIN` dropped and no TUN device, so WireGuard/Tailscale-in-TUN are impossible;
-and neither the Mac (behind NAT) nor the microservice (HTTPS-ingress only, no public
-UDP port) is directly reachable, so raw WireGuard can't traverse it either. An
-outbound WebSocket over the microservice's existing HTTPS ingress is the clean fit.
-
 ---
 
 ## Table of contents
