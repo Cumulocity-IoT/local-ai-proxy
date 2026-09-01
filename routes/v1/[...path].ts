@@ -16,6 +16,24 @@ import { useLogger } from 'c8y-nitro/utils'
 import { hasPeer, sendRequest, sendRequestStreaming } from '../../lib/bridge'
 import { getItem, putItem, storeCount } from '../../lib/item-store'
 
+/**
+ * Tunnel timeouts, overridable per deployment (large local models can exceed the
+ * 120s defaults, especially on the buffered path).
+ */
+const BUFFERED_TIMEOUT_MS = Number(process.env.TUNNEL_BUFFERED_TIMEOUT_MS ?? 120_000)
+const FIRST_BYTE_TIMEOUT_MS = Number(process.env.TUNNEL_FIRST_BYTE_TIMEOUT_MS ?? 120_000)
+const STREAM_IDLE_TIMEOUT_MS = Number(process.env.TUNNEL_STREAM_IDLE_TIMEOUT_MS ?? 120_000)
+
+/**
+ * Workaround: c8y-nitro bundles evlog's Nitro-v3 plugin (dev AND prod), which
+ * detects streaming responses by content-type / transfer-encoding and tries to
+ * reassign `event.res` to wrap them for logging — but h3 v2 makes `event.res`
+ * getter-only, so any `text/event-stream` response 500s. We therefore relay SSE
+ * bodies verbatim but labeled `text/plain`, which dodges the detection while
+ * keeping the response a real chunked stream. Remove once evlog is fixed upstream.
+ */
+const SSE_SAFE_CONTENT_TYPE = 'text/plain; charset=utf-8'
+
 function clip(value: string, max = 1500): string {
   return value.length <= max ? value : `${value.slice(0, max)}...`
 }
@@ -298,14 +316,22 @@ function teeForDiagnostics(
   const HEAD_MAX = 16_000
   const TAIL_MAX = 200_000
   let head = ''
-  let tail = ''
+  // Rolling tail kept as a chunk ring rather than one string, so multi-MB streams
+  // don't re-slice a 200KB string on every chunk. Joined (and trimmed) only when
+  // the summary is actually logged.
+  const tailParts: string[] = []
+  let tailLen = 0
+  const tailText = (): string => tailParts.join('').slice(-TAIL_MAX)
   let totalBytes = 0
   let lineBuffer = ''
   const fnCalls: Array<{ name: string, args: string }> = []
   const append = (text: string): void => {
     if (head.length < HEAD_MAX) head += text.slice(0, HEAD_MAX - head.length)
-    tail += text
-    if (tail.length > TAIL_MAX) tail = tail.slice(-TAIL_MAX)
+    tailParts.push(text)
+    tailLen += text.length
+    while (tailParts.length > 1 && tailLen - tailParts[0]!.length >= TAIL_MAX) {
+      tailLen -= tailParts.shift()!.length
+    }
     if (!meta.storeItems) return
     lineBuffer += text
     let nl = lineBuffer.indexOf('\n')
@@ -329,7 +355,7 @@ function teeForDiagnostics(
         if (done) {
           append(decoder.decode())
           flushLineBuffer()
-          logStreamSummary(meta, head, tail, totalBytes, fnCalls)
+          logStreamSummary(meta, head, tailText(), totalBytes, fnCalls)
           controller.close()
           return
         }
@@ -340,12 +366,12 @@ function teeForDiagnostics(
         }
       }
       catch (err) {
-        logStreamSummary(meta, head, tail, totalBytes, fnCalls, err)
+        logStreamSummary(meta, head, tailText(), totalBytes, fnCalls, err)
         controller.error(err)
       }
     },
     cancel(reason) {
-      logStreamSummary(meta, head, tail, totalBytes, fnCalls, reason)
+      logStreamSummary(meta, head, tailText(), totalBytes, fnCalls, reason)
       void reader.cancel(reason)
     },
   })
@@ -464,6 +490,21 @@ export default defineEventHandler(async (event) => {
 
   if (bodyDirty && parsedBody) body = JSON.stringify(parsedBody)
 
+  // Fail fast on references we cannot expand (evicted/never seen): forwarding them
+  // would only produce LM Studio's opaque `400 invalid_union`. Name the ids instead.
+  if (unresolvedRefs.length > 0) {
+    log.set({ result: 'unresolved_item_references', unresolvedRefs })
+    setResponseStatus(event, 422)
+    return {
+      error: {
+        message: `Cannot resolve item_reference id(s): ${unresolvedRefs.join(', ')}. `
+          + 'The proxy\'s item store has no copy (expired, evicted, or produced before a restart). '
+          + 'Start a fresh conversation or disable stateful mode (store:false).',
+        type: 'unresolved_item_reference',
+      },
+    }
+  }
+
   log.set({
     requestBodyBytes: body ? Buffer.byteLength(body, 'utf8') : 0,
     streamRequested,
@@ -484,16 +525,11 @@ export default defineEventHandler(async (event) => {
         path: forwardPath,
         headers: { 'content-type': 'application/json' },
         body,
-      })
+      }, FIRST_BYTE_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS)
       setResponseStatus(event, status)
       const upstreamContentType = headers['content-type'] ?? 'text/event-stream'
-      // NOTE: we deliberately do NOT echo `text/event-stream` back. evlog's Nitro-v3
-      // plugin (bundled by c8y-nitro, dev AND prod) detects streaming responses by
-      // content-type / transfer-encoding and tries to reassign `event.res` to wrap
-      // them for logging — but h3 v2 makes `event.res` getter-only, so that throws a
-      // 500. Sending `text/plain` keeps the response a real chunked stream while
-      // dodging that detection. The body bytes are the SSE payload, verbatim.
-      const outgoingContentType = 'text/plain; charset=utf-8'
+      // See SSE_SAFE_CONTENT_TYPE: never echo `text/event-stream` back.
+      const outgoingContentType = SSE_SAFE_CONTENT_TYPE
       setResponseHeader(event, 'content-type', outgoingContentType)
       // SSE hygiene: never let an intermediary buffer or transform the stream.
       setResponseHeader(event, 'cache-control', 'no-cache, no-transform')
@@ -521,17 +557,15 @@ export default defineEventHandler(async (event) => {
       path: forwardPath,
       headers: { 'content-type': 'application/json' },
       body,
-    })
+    }, BUFFERED_TIMEOUT_MS)
     setResponseStatus(event, resp.status)
     if (resp.status >= 400) {
       log.set({ upstreamError: clip(resp.body, 2000) })
     }
     const contentType = resp.headers['content-type'] ?? 'application/json'
     const isEventStream = contentType.toLowerCase().includes('text/event-stream')
-    // Workaround: c8y-nitro/evlog currently crashes in onResponse for event-stream
-    // content types in this runtime. We still return the SSE payload body verbatim,
-    // but with a plain-text content type so response hooks complete successfully.
-    const outgoingContentType = isEventStream ? 'text/plain; charset=utf-8' : contentType
+    // See SSE_SAFE_CONTENT_TYPE for why event-stream bodies are relabeled.
+    const outgoingContentType = isEventStream ? SSE_SAFE_CONTENT_TYPE : contentType
     setResponseHeader(event, 'content-type', outgoingContentType)
     log.set({
       upstreamStatus: resp.status,

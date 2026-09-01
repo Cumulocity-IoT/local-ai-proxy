@@ -7,7 +7,8 @@
  *
  * Auth is enforced manually in `open` (c8y-nitro's role-guard middleware only
  * applies to HTTP handlers, not WebSocket handlers): the client must present the
- * shared tunnel secret via the `x-tunnel-secret` header or a `?secret=` query param.
+ * shared tunnel secret via the `x-tunnel-secret` header. A query-param fallback
+ * is deliberately NOT supported — query strings end up in gateway access logs.
  */
 import { defineWebSocketHandler } from 'nitro/h3'
 import { createLogger } from 'c8y-nitro/utils'
@@ -16,19 +17,8 @@ import { useTunnelSecret } from '../lib/config'
 import { logLocalProviderConfigOnce } from '../lib/provider-config'
 import { TUNNEL_SECRET_HEADER, type ClientFrame } from '../shared/protocol'
 
-function extractSecret(peer: { request?: { headers?: Headers, url?: string } }): string | null {
-  const req = peer.request
-  if (!req)
-    return null
-  const fromHeader = req.headers?.get?.(TUNNEL_SECRET_HEADER)
-  if (fromHeader)
-    return fromHeader
-  try {
-    return new URL(req.url ?? '', 'http://localhost').searchParams.get('secret')
-  }
-  catch {
-    return null
-  }
+function extractSecret(peer: { request?: { headers?: Headers } }): string | null {
+  return peer.request?.headers?.get?.(TUNNEL_SECRET_HEADER) ?? null
 }
 
 export default defineWebSocketHandler({
@@ -54,7 +44,7 @@ export default defineWebSocketHandler({
     void logLocalProviderConfigOnce()
   },
 
-  message(peer, message) {
+  message(_peer, message) {
     let frame: ClientFrame
     try {
       frame = JSON.parse(message.text()) as ClientFrame
@@ -77,11 +67,6 @@ export default defineWebSocketHandler({
         break
       case 'error':
         rejectResponse(frame.id, frame.message)
-        break
-      case 'ping':
-        peer.send(JSON.stringify({ type: 'pong' }))
-        break
-      case 'pong':
         break
     }
   },

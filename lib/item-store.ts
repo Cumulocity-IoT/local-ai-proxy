@@ -22,7 +22,10 @@ interface StoredItem {
 
 const store = new Map<string, StoredItem>()
 
-/** Items are short-lived: a conversation's turns arrive seconds apart. */
+/**
+ * Generous TTL: turns usually arrive seconds apart, but a conversation can idle
+ * (user walks away) and its references must still resolve when it resumes.
+ */
 const TTL_MS = 30 * 60_000
 /** Backstop against unbounded growth; oldest entries are evicted first. */
 const MAX_ENTRIES = 2000
@@ -31,10 +34,17 @@ function evict(now: number): void {
   for (const [id, entry] of store) {
     if (entry.expiresAt <= now) store.delete(id)
   }
+  // Size-cap trimming is logged: a silently evicted item resurfaces later as a
+  // mystery `unresolved_item_reference`, so leave a trail.
+  let trimmed = 0
   while (store.size > MAX_ENTRIES) {
     const oldest = store.keys().next().value
     if (oldest === undefined) break
     store.delete(oldest)
+    trimmed++
+  }
+  if (trimmed > 0) {
+    console.log(JSON.stringify({ tag: 'item-store-evict', trimmed, size: store.size, maxEntries: MAX_ENTRIES }))
   }
 }
 

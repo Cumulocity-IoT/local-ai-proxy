@@ -4,14 +4,18 @@
  * every request/response frame is correlated by `id`.
  *
  * Direction:
- *   service → Mac:  RequestFrame, PingFrame
+ *   service → Mac:  RequestFrame, CancelFrame
  *   Mac → service:  ResponseFrame | (ResponseStart→ResponseChunk*→ResponseEnd),
- *                   ErrorFrame, PongFrame
+ *                   ErrorFrame
  *
  * Each request is answered by EITHER a single buffered ResponseFrame (when the
  * caller did not request streaming) OR a stream: one ResponseStartFrame, zero or
  * more ResponseChunkFrames, and a terminal ResponseEndFrame — all sharing the
  * request `id`. An ErrorFrame can replace/terminate either shape at any point.
+ *
+ * Bodies are relayed as UTF-8 text. That covers everything the OpenAI surface
+ * uses today (JSON + SSE); binary endpoints (e.g. /v1/audio/*) are NOT supported
+ * and would be corrupted by the text decode on the Mac side.
  *
  * This file is shared by both the microservice and mac-client (types only).
  */
@@ -65,6 +69,16 @@ export interface ResponseEndFrame {
   id: string
 }
 
+/**
+ * The service no longer wants the response for `id` (the downstream HTTP client
+ * disconnected, or a timeout fired). The Mac should abort the in-flight LM Studio
+ * request so the model stops generating and the tunnel stops carrying dead chunks.
+ */
+export interface CancelFrame {
+  type: 'cancel'
+  id: string
+}
+
 /** The Mac failed to reach LM Studio (or another local error). */
 export interface ErrorFrame {
   type: 'error'
@@ -72,20 +86,15 @@ export interface ErrorFrame {
   message: string
 }
 
-export interface PingFrame { type: 'ping' }
-export interface PongFrame { type: 'pong' }
-
 /** Frames the microservice sends to the Mac. */
-export type ServerFrame = RequestFrame | PingFrame | PongFrame
-/** Frames the Mac sends to the microservice. */
+export type ServerFrame = RequestFrame | CancelFrame
+/** Frames the Mac sends to the microservice. Keepalive uses WS protocol pings, not JSON frames. */
 export type ClientFrame =
   | ResponseFrame
   | ResponseStartFrame
   | ResponseChunkFrame
   | ResponseEndFrame
   | ErrorFrame
-  | PingFrame
-  | PongFrame
 
 export type Frame = ServerFrame | ClientFrame
 
