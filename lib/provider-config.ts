@@ -88,9 +88,11 @@ export async function logLocalProviderConfigOnce(): Promise<void> {
   const { config, authResolved } = await buildLocalProviderConfig()
   const log = createLogger({ channel: 'provider-config', action: 'emit-local-provider-config' })
   log.set({
-    message: 'Local provider config ready to paste into AI Agent Local provider field',
+    message: 'Local provider config ready — fetch GET /provider-config for the paste-ready JSON',
     authResolved,
-    config,
+    // Never log the resolved Authorization header: it is the technical user's
+    // password (base64), and logs are far more widely readable than tenant options.
+    config: { ...config, headers: { Authorization: authResolved ? '<redacted — see GET /provider-config>' : config.headers.Authorization } },
     hint: authResolved
       ? undefined
       : 'Authorization is a placeholder. Set tenant options agentUser and credentials.agentPassword to fill it automatically.',

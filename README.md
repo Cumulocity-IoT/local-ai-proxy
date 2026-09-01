@@ -342,6 +342,9 @@ model (watch LM Studio’s log to confirm).
 | `TUNNEL_SECRET` | Dev fallback for the tunnel secret when the tenant option is absent |
 | `C8Y_BASEURL`, `C8Y_BOOTSTRAP_*` | Required for the dev worker to start (dummy values OK locally) |
 | `C8Y_DEVELOPMENT_*` | Needed by `c8y-nitro bootstrap` to register the app |
+| `TUNNEL_BUFFERED_TIMEOUT_MS` | Timeout for non-streaming requests (default `120000`). Raise for slow/large local models. Works in production too (set via the microservice manifest/deployment env). |
+| `TUNNEL_FIRST_BYTE_TIMEOUT_MS` | Streaming: max wait for the response to start (default `120000`) |
+| `TUNNEL_STREAM_IDLE_TIMEOUT_MS` | Streaming: max gap between chunks before the stream is cut (default `120000`) |
 
 **`mac-client/.env`:**
 
@@ -389,8 +392,11 @@ model (watch LM Studio’s log to confirm).
   LM Studio version implements the endpoint your agent uses.
 - **Auth model.** All microservice routes are gateway-protected; there are no
   anonymous endpoints. The `agent-tunnel` WebSocket is additionally guarded by the
-  shared tunnel secret (checked manually in the `open` hook, since c8y-nitro’s
-  role-guard middleware only applies to HTTP handlers).
+  shared tunnel secret, checked manually in the `open` hook and presented only via
+  the `x-tunnel-secret` header (never a query param, which would land in gateway
+  access logs). Any authenticated tenant user can reach the HTTP routes — the proxy
+  itself is the guard in front of LM Studio; `ROLE_LOCAL_AI_PROXY_ACCESS` exists to
+  scope the technical user down to this one service.
 
 ---
 
@@ -403,6 +409,8 @@ model (watch LM Studio’s log to confirm).
 | Mac client connects then immediately closes (`1008 unauthorized`) | `TUNNEL_SECRET` mismatch, or the tenant option `tunnel.secret` (category `local.ai`) is unset/`change-me`. |
 | Agent calls fail with 401/403 at the gateway | Technical user lacks access to the `local-ai-proxy` application, or the `headers.Authorization` base64 is wrong. |
 | `Failed to load model …insufficient system resources` | LM Studio couldn’t load that model — use a model that’s already **loaded** (see the `/api/v0/models` check). |
+| `422 {"error":{"type":"unresolved_item_reference"}}` | The agent referenced a prior output item the proxy no longer holds (microservice restarted mid-conversation, or the item expired/was evicted from the in-memory store). Start a fresh conversation, or set `store:false` in the agent so items are resent inline. |
+| Requests time out on long generations | Raise `TUNNEL_BUFFERED_TIMEOUT_MS` (non-streaming) or `TUNNEL_STREAM_IDLE_TIMEOUT_MS` / `TUNNEL_FIRST_BYTE_TIMEOUT_MS` (streaming) on the microservice. |
 | Agent gets 404 from `/v1/responses` | Your LM Studio doesn’t implement the Responses API endpoint the SDK uses — update LM Studio, or (follow-up) add a `/responses`→`/chat/completions` shim. |
 | `pnpm build` fails | Ensure Docker is running and in `PATH`. |
 | Microservice won’t start on the tenant / `exec format error` in logs | Image built for the wrong architecture. The `build` script sets `DOCKER_DEFAULT_PLATFORM=linux/amd64`; confirm your image is `amd64` (see the build note in B.1). |

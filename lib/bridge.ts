@@ -74,6 +74,22 @@ export function clearPeer(peer?: TunnelPeer): void {
   failAllPending('tunnel closed')
 }
 
+/**
+ * Tell the Mac to abort the upstream LM Studio request for `id`. Called whenever
+ * we stop caring about a response (timeout, downstream client disconnect) so the
+ * model stops generating and the tunnel stops carrying chunks nobody reads.
+ */
+function notifyCancel(id: string): void {
+  const peer = currentPeer
+  if (!peer) return
+  try {
+    peer.send(JSON.stringify({ type: 'cancel', id }))
+  }
+  catch {
+    // Peer is going away — nothing to cancel against.
+  }
+}
+
 function failAllPending(message: string): void {
   for (const [id, p] of pending) {
     clearTimeout(p.timer)
@@ -122,14 +138,18 @@ export function startStream(id: string, status: number, headers: Record<string, 
       p.controller = controller
     },
     cancel() {
-      // Downstream (the HTTP client) went away — drop the pending entry.
+      // Downstream (the HTTP client) went away — drop the pending entry and
+      // abort the upstream request on the Mac.
+      clearTimeout(p.timer)
       pending.delete(id)
+      notifyCancel(id)
     },
   })
 
   // Post-start: reset an inactivity timer on each chunk so a stalled upstream is cut.
   p.timer = setTimeout(() => {
     pending.delete(id)
+    notifyCancel(id)
     if (p.controller) {
       try {
         p.controller.error(new Error('tunnel stream timed out (no chunks)'))
@@ -150,6 +170,7 @@ export function pushChunk(id: string, data: string): void {
   clearTimeout(p.timer)
   p.timer = setTimeout(() => {
     pending.delete(id)
+    notifyCancel(id)
     try {
       p.controller?.error(new Error('tunnel stream timed out (no chunks)'))
     }
@@ -161,8 +182,10 @@ export function pushChunk(id: string, data: string): void {
     p.controller.enqueue(p.encoder.encode(data))
   }
   catch {
-    // Controller closed (client disconnected) — stop tracking.
+    // Controller closed (client disconnected) — stop tracking and abort upstream.
+    clearTimeout(p.timer)
     pending.delete(id)
+    notifyCancel(id)
   }
 }
 
@@ -212,6 +235,7 @@ export function sendRequest(
   return new Promise<ResponseFrame>((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id)
+      notifyCancel(id)
       reject(new Error('tunnel request timed out'))
     }, timeoutMs)
 
@@ -249,6 +273,7 @@ export function sendRequestStreaming(
   return new Promise<StreamHandle>((resolveStart, rejectStart) => {
     const timer = setTimeout(() => {
       pending.delete(id)
+      notifyCancel(id)
       rejectStart(new Error('tunnel request timed out'))
     }, firstByteMs)
 

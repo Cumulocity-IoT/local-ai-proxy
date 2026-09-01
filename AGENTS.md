@@ -59,7 +59,8 @@ safely" companion.
      versions checked — confirm in the end-to-end agent test).
 3. **WebSocket auth is manual.** `c8y-nitro`'s role-guard middleware only covers HTTP
    handlers, so the WS route checks the tunnel secret itself in the `open` hook
-   (header `x-tunnel-secret` or `?secret=` query). Don't assume the guard runs there.
+   (header `x-tunnel-secret` only — no query-param fallback, since query strings land
+   in gateway access logs). Don't assume the guard runs there.
 4. **Gateway auth on both surfaces.** Every `/service/local-ai-proxy/*` route —
    including the WS upgrade — requires a valid C8Y user. The mac-client therefore
    sends `C8Y_AUTH` on the upgrade in production; the agent sends

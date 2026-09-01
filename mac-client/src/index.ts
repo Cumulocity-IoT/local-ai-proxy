@@ -14,10 +14,13 @@
  */
 import WebSocket from 'ws'
 import { TUNNEL_SECRET_HEADER } from '../../shared/protocol'
-import type { ClientFrame, ErrorFrame, RequestFrame, ResponseFrame } from '../../shared/protocol'
+import type { ClientFrame, ErrorFrame, RequestFrame, ResponseFrame, ServerFrame } from '../../shared/protocol'
 
 /** Number of forwarded requests currently being served (streamed or buffered). */
 let inFlight = 0
+
+/** In-flight LM Studio requests by frame id, so a CancelFrame can abort them. */
+const inFlightControllers = new Map<string, AbortController>()
 
 const WSS_URL = process.env.PROXY_WSS_URL
 const SECRET = process.env.TUNNEL_SECRET
@@ -40,12 +43,11 @@ const MAX_BACKOFF_MS = 30_000
 let backoff = 1000
 
 function connect(): void {
+  // The secret travels ONLY as a header — never as a query param, which would be
+  // recorded in gateway access logs.
   const headers: Record<string, string> = { [TUNNEL_SECRET_HEADER]: SECRET! }
   if (C8Y_AUTH) headers.Authorization = C8Y_AUTH
-  // Pass the secret as a query param too — some gateways drop custom headers on the
-  // WS upgrade, and the query string is always forwarded with the path.
-  const url = `${WSS_URL}${WSS_URL!.includes('?') ? '&' : '?'}secret=${encodeURIComponent(SECRET!)}`
-  const ws = new WebSocket(url, { headers })
+  const ws = new WebSocket(WSS_URL!, { headers })
   let heartbeat: ReturnType<typeof setInterval> | undefined
   let recycle: ReturnType<typeof setTimeout> | undefined
   let recycling = false
@@ -77,14 +79,15 @@ function connect(): void {
   })
 
   ws.on('message', (data) => {
-    let frame: RequestFrame
+    let frame: ServerFrame
     try {
-      frame = JSON.parse(data.toString()) as RequestFrame
+      frame = JSON.parse(data.toString()) as ServerFrame
     }
     catch {
       return
     }
     if (frame.type === 'request') void handleRequest(ws, frame)
+    else if (frame.type === 'cancel') inFlightControllers.get(frame.id)?.abort()
   })
 
   ws.on('close', (code, reason) => {
@@ -110,11 +113,14 @@ async function handleRequest(ws: WebSocket, frame: RequestFrame): Promise<void> 
   })
 
   inFlight++
+  const controller = new AbortController()
+  inFlightControllers.set(frame.id, controller)
   try {
     const res = await fetch(`${LMSTUDIO_URL}${frame.path}`, {
       method: frame.method,
       headers: frame.headers,
       body: frame.body,
+      signal: controller.signal,
     })
 
     if (frame.stream) {
@@ -147,14 +153,19 @@ async function handleRequest(ws: WebSocket, frame: RequestFrame): Promise<void> 
     send(response)
   }
   catch (err) {
-    const error: ErrorFrame = {
-      type: 'error',
-      id: frame.id,
-      message: err instanceof Error ? err.message : String(err),
+    // A service-initiated cancel is not an error — the service already gave up
+    // on this id, so an ErrorFrame would go nowhere.
+    if (!controller.signal.aborted) {
+      const error: ErrorFrame = {
+        type: 'error',
+        id: frame.id,
+        message: err instanceof Error ? err.message : String(err),
+      }
+      send(error)
     }
-    send(error)
   }
   finally {
+    inFlightControllers.delete(frame.id)
     inFlight--
   }
 }
