@@ -414,4 +414,3 @@ model (watch LM Studio’s log to confirm).
 | `pnpm build` fails | Ensure Docker is running and in `PATH`. |
 | Microservice won’t start on the tenant / `exec format error` in logs | Image built for the wrong architecture. The `build` script sets `DOCKER_DEFAULT_PLATFORM=linux/amd64`; confirm your image is `amd64` (see the build note in B.1). |
 | `ERR_MODULE_NOT_FOUND … tslib/modules/index.js` at startup | Nitro’s tracer copied the wrong `tslib` export condition. Fixed by `noExternals: ['tslib']` in `nitro.config.ts`, which bundles tslib in. If another dependency shows the same error, add it to that list and rebuild. |
-# ai-agent-local-ai-extension
